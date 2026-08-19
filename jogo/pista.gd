@@ -139,7 +139,7 @@ func _draw() -> void:
 	var escala := largura_pista / meta
 
 	_desenha_cabecalho(tela)
-	_desenha_meta(tela, largura_pista)
+	_desenha_meta(largura_pista)
 
 	var lista := _ranking()
 	for i in mini(lista.size(), raias_visiveis):
@@ -189,7 +189,7 @@ func _desenha_cabecalho(tela: Vector2) -> void:
 		HORIZONTAL_ALIGNMENT_LEFT, -1, 13, COR_PISTA.lightened(0.25))
 
 
-func _desenha_meta(tela: Vector2, largura_pista: float) -> void:
+func _desenha_meta(largura_pista: float) -> void:
 	var x := MARGEM_ESQ + largura_pista
 	var altura := mini(_corrida.corredores().size(), raias_visiveis) * ALTURA_RAIA
 	draw_line(Vector2(x, TOPO - 14), Vector2(x, TOPO + maxf(altura, 40.0)), COR_META, 3.0)
