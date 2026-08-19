@@ -33,6 +33,11 @@ except AttributeError:
     pass
 
 
+## Quantas falhas SEGUIDAS de leitura até desistir da live. O contador zera a
+## cada leitura boa, então erro esparso ao longo de horas nunca acumula.
+MAX_FALHAS_SEGUIDAS = 5
+
+
 def emit(obj):
     """Escreve um evento no stdout como uma linha JSON."""
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -112,7 +117,109 @@ def extract_video_id(arg):
     return None
 
 
+def bombear_chat(chat, dormir=time.sleep):
+    """
+    Lê o chat até acabar. Devolve "ended" no fim normal e "fetchFailed" quando
+    desiste por erro repetido.
+
+    Uma falha isolada do pytchat NÃO pode derrubar a conexão. A versão anterior
+    saía do loop na primeira exceção de chat.get(), e o jogo ficava sem chat
+    pelo resto da transmissão — aconteceu de verdade, 10 minutos adentro, com
+    "'NoneType' object has no attribute 'get'" vindo de dentro do pytchat.
+    Numa live de duas horas isso é fatal: ninguém vai reiniciar o jogo no ar.
+
+    Espera crescente entre tentativas (2s, 4s, 8s, 16s) porque a causa costuma
+    ser hipo momentâneo da InnerTube — insistir rápido só piora.
+    """
+    first_batch = True
+    falhas = 0
+
+    while chat.is_alive():
+        try:
+            data = chat.get()
+        except Exception as e:
+            falhas += 1
+            if falhas >= MAX_FALHAS_SEGUIDAS:
+                bridge("error", reason="fetchFailed",
+                       message="%s (desisti após %d tentativas seguidas)" % (e, falhas))
+                return "fetchFailed"
+            bridge("error", reason="fetchRetry",
+                   message="%s (tentativa %d de %d)" % (e, falhas, MAX_FALHAS_SEGUIDAS))
+            dormir(min(2 ** falhas, 30))
+            continue
+
+        falhas = 0
+        items = data.get("items", []) if isinstance(data, dict) else []
+
+        # O primeiro lote é histórico do chat. Sinalizamos para o Godot
+        # decidir se descarta (senão o jogo spawna 200 pessoas de uma vez).
+        if first_batch and items:
+            bridge("history_start", count=len(items))
+
+        for item in items:
+            emit(item)
+
+        if first_batch:
+            bridge("history_end")
+            first_batch = False
+
+        polling = 1.0
+        if isinstance(data, dict) and data.get("pollingIntervalMillis"):
+            polling = max(float(data["pollingIntervalMillis"]) / 1000.0, 0.5)
+        dormir(polling)
+
+    return "ended"
+
+
+def autoteste():
+    """
+    Confere a resiliência do loop sem precisar de live:
+
+        python3 pytchat_bridge.py --autoteste
+    """
+    class ChatFalso:
+        def __init__(self, roteiro):
+            self.roteiro = list(roteiro)
+
+        def is_alive(self):
+            return bool(self.roteiro)
+
+        def get(self):
+            passo = self.roteiro.pop(0)
+            if isinstance(passo, Exception):
+                raise passo
+            return passo
+
+    def sem_espera(_s):
+        return None
+    lote = {"items": [{"ok": 1}], "pollingIntervalMillis": 500}
+    falhas = []
+
+    # O erro que derrubou a live de verdade, seguido de leitura boa.
+    chat = ChatFalso([AttributeError("'NoneType' object has no attribute 'get'"), lote])
+    if bombear_chat(chat, dormir=sem_espera) != "ended":
+        falhas.append("falha isolada derrubou a conexão")
+
+    # Quatro seguidas ainda não podem desistir (MAX_FALHAS_SEGUIDAS = 5).
+    chat = ChatFalso([RuntimeError("boom")] * 4 + [lote])
+    if bombear_chat(chat, dormir=sem_espera) != "ended":
+        falhas.append("desistiu antes de MAX_FALHAS_SEGUIDAS")
+
+    # Erro permanente precisa terminar, senão o jogo trava esperando para sempre.
+    chat = ChatFalso([RuntimeError("boom")] * 50)
+    if bombear_chat(chat, dormir=sem_espera) != "fetchFailed":
+        falhas.append("erro permanente não terminou em fetchFailed")
+
+    for f in falhas:
+        print("FALHA: " + f, file=sys.stderr)
+    print("autoteste: %d falha(s)" % len(falhas), file=sys.stderr)
+    return 1 if falhas else 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--autoteste":
+        return autoteste()
+
     if len(sys.argv) < 2:
         bridge("error", reason="usage", message="uso: pytchat_bridge.py <video_id|url|channel:UC...>")
         return 2
@@ -140,34 +247,8 @@ def main():
 
     bridge("ready", video_id=video_id)
 
-    first_batch = True
     try:
-        while chat.is_alive():
-            try:
-                data = chat.get()
-            except Exception as e:
-                bridge("error", reason="fetchFailed", message=str(e))
-                break
-
-            items = data.get("items", []) if isinstance(data, dict) else []
-
-            # O primeiro lote é histórico do chat. Sinalizamos para o Godot
-            # decidir se descarta (senão o jogo spawna 200 pessoas de uma vez).
-            if first_batch and items:
-                bridge("history_start", count=len(items))
-
-            for item in items:
-                emit(item)
-
-            if first_batch:
-                bridge("history_end")
-                first_batch = False
-
-            polling = 1.0
-            if isinstance(data, dict) and data.get("pollingIntervalMillis"):
-                polling = max(float(data["pollingIntervalMillis"]) / 1000.0, 0.5)
-            time.sleep(polling)
-
+        bombear_chat(chat)
     except KeyboardInterrupt:
         pass
     finally:
