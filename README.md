@@ -277,7 +277,8 @@ passo. Dá pra conferir o visual antes de subir.
 
 ### Por que corrida e não um jogo de reflexo
 
-O chat do YouTube chega em lote a cada ~5s. Um jogo de reação (pular, desviar)
+O chat do YouTube chega em lote: a cada ~1,5s no backend pytchat (padrão do
+exemplo) e a cada ~5s no backend oficial. Um jogo de reação (pular, desviar)
 receberia o comando depois que a situação já passou — injogável, e você
 culparia o addon. Corrida é acumulativa: importa **quantos** `!corre`
 chegaram, nunca quando. A latência deixa de existir como problema.
@@ -506,7 +507,7 @@ para ~870 chamadas. No backend pytchat vira no-op (não há cota).
 |---|---|---|
 | API key | precisa | não |
 | Cota | ~2 lives/dia | nenhuma |
-| Latência | 5s+ | menor |
+| Latência | ~5s | ~1,5s |
 | Estabilidade | contrato documentado | quebra sem aviso |
 | Manutenção da dep. | Google | upstream parado |
 | Termos de uso | limpo | zona cinza |

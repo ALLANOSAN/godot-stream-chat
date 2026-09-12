@@ -37,6 +37,16 @@ except AttributeError:
 ## cada leitura boa, então erro esparso ao longo de horas nunca acumula.
 MAX_FALHAS_SEGUIDAS = 5
 
+## Cadência de consulta à InnerTube. O servidor sugere até ~5s
+## (pollingIntervalMillis) entre consultas, mas isso é RECOMENDAÇÃO para a
+## próxima chamada, não um bloqueio: cada get() devolve o que chegou além do
+## continuation, então consultar antes corta a demora de cada mensagem. O
+## pytchat tradicional já rodava a ~1,5s sem problema nenhum.
+##   CADENCIA_MAX_SEG = 1,5  -> chat quieto, que sugeria ~5s, responde em ~1,5s
+##   CADENCIA_MIN_SEG = 0,5  -> nunca mais rápido que isso (nada de hot loop)
+CADENCIA_MIN_SEG = 0.5
+CADENCIA_MAX_SEG = 1.5
+
 
 def emit(obj):
     """Escreve um evento no stdout como uma linha JSON."""
@@ -117,7 +127,7 @@ def extract_video_id(arg):
     return None
 
 
-def bombear_chat(chat, dormir=time.sleep):
+def bombear_chat(chat, dormir=time.sleep, reloj=time.monotonic):
     """
     Lê o chat até acabar. Devolve "ended" no fim normal e "fetchFailed" quando
     desiste por erro repetido.
@@ -130,11 +140,20 @@ def bombear_chat(chat, dormir=time.sleep):
 
     Espera crescente entre tentativas (2s, 4s, 8s, 16s) porque a causa costuma
     ser hipo momentâneo da InnerTube — insistir rápido só piora.
+
+    Latência: cada get() devolve em UMA consulta o que chegou além do
+    continuation. O pollingIntervalMillis que o servidor sugere (tipicamente
+    ~5s em chat quieto) é a pauta para a PRÓXIMA consulta, não um bloqueo:
+    consultar antes disso corta a demora de cada mensagem. Espejamos até
+    CADENCIA_MAX_SEG (1,5s — o ritmo clásico do pytchat); se a sugestão do
+    servidor já é menor, respeitamos essa. E se o get() demorou (rede, servidor
+    lento), esse tempo conta no ciclo para não acumular atraso.
     """
     first_batch = True
     falhas = 0
 
     while chat.is_alive():
+        inicio = reloj()
         try:
             data = chat.get()
         except Exception as e:
@@ -147,6 +166,8 @@ def bombear_chat(chat, dormir=time.sleep):
                    message="%s (tentativa %d de %d)" % (e, falhas, MAX_FALHAS_SEGUIDAS))
             dormir(min(2 ** falhas, 30))
             continue
+
+        bloqueado = reloj() - inicio
 
         falhas = 0
         items = data.get("items", []) if isinstance(data, dict) else []
@@ -166,7 +187,10 @@ def bombear_chat(chat, dormir=time.sleep):
         polling = 1.0
         if isinstance(data, dict) and data.get("pollingIntervalMillis"):
             polling = max(float(data["pollingIntervalMillis"]) / 1000.0, 0.5)
-        dormir(polling)
+        # Já bloqueado pelo get() conta no ciclo; respeitamos o intervalo
+        # sugerido quando é curto, e nunca passamos de CADENCIA_MAX_SEG.
+        espera = max(polling - bloqueado, CADENCIA_MIN_SEG)
+        dormir(min(espera, CADENCIA_MAX_SEG))
 
     return "ended"
 
@@ -232,12 +256,26 @@ def main():
                message="pytchat não instalado. Rode: pip install --user pytchat")
         return 3
 
+    # A InnerTube não tem cota como a Data API, mas tolera mal que se insista
+    # além do pollingIntervalMillis que ela sugere. O timeout padrão do httpx é
+    # 5s — justo o intervalo típico de um chat quieto: qualquer rede um pouco
+    # lenta estourava o get(), o pytchat caía no retry interno (sleep 2s x N)
+    # e a ponte parecia atrasada (ou morta). 30s dán folga sem efeito no ritmo
+    # real, que manda o pollingIntervalMillis devolvido em cada lote.
+    try:
+        import httpx as _httpx
+    except ImportError:
+        _httpx = None
+
     video_id = extract_video_id(sys.argv[1])
     if not video_id:
         return 4
 
     try:
-        chat = pytchat.create(video_id=video_id, processor=CompatibleProcessor())
+        kwargs = {"video_id": video_id, "processor": CompatibleProcessor()}
+        if _httpx is not None:
+            kwargs["client"] = _httpx.Client(timeout=30.0, http2=True)
+        chat = pytchat.create(**kwargs)
     except TypeError:
         # API antiga de algumas versões/forks.
         chat = pytchat.LiveChat(video_id, processor=CompatibleProcessor())
