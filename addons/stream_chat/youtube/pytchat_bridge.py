@@ -37,15 +37,19 @@ except AttributeError:
 ## cada leitura boa, então erro esparso ao longo de horas nunca acumula.
 MAX_FALHAS_SEGUIDAS = 5
 
-## Cadência de consulta à InnerTube. O servidor sugere até ~5s
+## Cadência adaptativa de consulta à InnerTube. O servidor sugere até ~5s
 ## (pollingIntervalMillis) entre consultas, mas isso é RECOMENDAÇÃO para a
 ## próxima chamada, não um bloqueio: cada get() devolve o que chegou além do
 ## continuation, então consultar antes corta a demora de cada mensagem. O
-## pytchat tradicional já rodava a ~1,5s sem problema nenhum.
-##   CADENCIA_MAX_SEG = 1,5  -> chat quieto, que sugeria ~5s, responde em ~1,5s
+## pytchat tradicional já rodava a ~1,5s sem problema nenhum — aqui o ritmo
+## ainda depende do movimento:
+##   INTER_ATIVO_SEG = 1,0   -> lote com mensaje: volta em 1s (aí que importa)
+##   INTER_PARADO_SEG = 2,0  -> lote vazio: relaxa para 2s (economiza chamada)
 ##   CADENCIA_MIN_SEG = 0,5  -> nunca mais rápido que isso (nada de hot loop)
+## Se a sugestão do servidor já é menor que o alvo, respeitamos essa.
 CADENCIA_MIN_SEG = 0.5
-CADENCIA_MAX_SEG = 1.5
+INTER_ATIVO_SEG = 1.0
+INTER_PARADO_SEG = 2.0
 
 
 def emit(obj):
@@ -141,13 +145,16 @@ def bombear_chat(chat, dormir=time.sleep, reloj=time.monotonic):
     Espera crescente entre tentativas (2s, 4s, 8s, 16s) porque a causa costuma
     ser hipo momentâneo da InnerTube — insistir rápido só piora.
 
-    Latência: cada get() devolve em UMA consulta o que chegou além do
-    continuation. O pollingIntervalMillis que o servidor sugere (tipicamente
-    ~5s em chat quieto) é a pauta para a PRÓXIMA consulta, não um bloqueo:
-    consultar antes disso corta a demora de cada mensagem. Espejamos até
-    CADENCIA_MAX_SEG (1,5s — o ritmo clásico do pytchat); se a sugestão do
-    servidor já é menor, respeitamos essa. E se o get() demorou (rede, servidor
-    lento), esse tempo conta no ciclo para não acumular atraso.
+    Latência (cadência adaptativa): cada get() devolve em UMA consulta o que
+    chegou além do continuation. O pollingIntervalMillis que o servidor sugere
+    (tipicamente ~5s em chat quieto) é a pauta para a PRÓXIMA consulta, não
+    um bloqueo: consultar antes disso corta a demora de cada mensagem. Por
+    isso o intervalo depende do movimento:
+      lote com mensaje  -> consulta de novo em ~1s  (é quando a demora importa)
+      lote vazio        -> relaxa para ~2s          (economiza chamada)
+    Se a sugestão do servidor é menor que o alvo, respeitamos essa. E se o
+    get() demorou (rede, servidor lento), esse tempo conta no ciclo para não
+    acumular atraso.
     """
     first_batch = True
     falhas = 0
@@ -187,10 +194,12 @@ def bombear_chat(chat, dormir=time.sleep, reloj=time.monotonic):
         polling = 1.0
         if isinstance(data, dict) and data.get("pollingIntervalMillis"):
             polling = max(float(data["pollingIntervalMillis"]) / 1000.0, 0.5)
-        # Já bloqueado pelo get() conta no ciclo; respeitamos o intervalo
-        # sugerido quando é curto, e nunca passamos de CADENCIA_MAX_SEG.
-        espera = max(polling - bloqueado, CADENCIA_MIN_SEG)
-        dormir(min(espera, CADENCIA_MAX_SEG))
+        # Cadência adaptativa: chat com movimento volta em ~1s; parado, ~2s.
+        # O get() já bloqueou parte do ciclo; a sugestão do servidor só vale
+        # quando é MAIS CURTA que o nosso alvo (piso de 0,5s sempre).
+        alvo = INTER_ATIVO_SEG if items else INTER_PARADO_SEG
+        espera = max(min(polling, alvo) - bloqueado, CADENCIA_MIN_SEG)
+        dormir(espera)
 
     return "ended"
 
@@ -233,6 +242,23 @@ def autoteste():
     chat = ChatFalso([RuntimeError("boom")] * 50)
     if bombear_chat(chat, dormir=sem_espera) != "fetchFailed":
         falhas.append("erro permanente não terminou em fetchFailed")
+
+    # Cadência adaptativa: lote vazio espera o intervalo parado; lote com
+    # mensaje volta no intervalo ativo (servidor sugerindo 5s nos dois casos).
+    esperas = []
+
+    def grava(s):
+        esperas.append(s)
+    quieto = {"items": [], "pollingIntervalMillis": 5000}
+    ativo = {"items": [{"ok": 1}], "pollingIntervalMillis": 5000}
+    chat = ChatFalso([quieto, ativo])
+    if bombear_chat(chat, dormir=grava) != "ended":
+        falhas.append("loop de cadência não terminou")
+    elif len(esperas) != 2 \
+            or abs(esperas[0] - INTER_PARADO_SEG) >= 0.05 \
+            or abs(esperas[1] - INTER_ATIVO_SEG) >= 0.05:
+        falhas.append("cadência adaptativa errada: %s (queria ~[%.1f, %.1f])"
+                      % (esperas, INTER_PARADO_SEG, INTER_ATIVO_SEG))
 
     for f in falhas:
         print("FALHA: " + f, file=sys.stderr)
