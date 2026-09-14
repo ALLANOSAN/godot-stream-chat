@@ -33,13 +33,13 @@ jogo real.
 ## Índice
 
 1. [Instalação](#instalação)
-2. [Credenciais](#credenciais)
+2. [Instalar o pytchat](#instalar-o-pytchat) — Linux e Windows (**necessário para o padrão**)
+3. [Credenciais](#credenciais)
    · [Apontar para a sua live](#apontar-para-a-sua-live) — pública vs. não listada
-3. [Referência da API](#referência-da-api)
-4. [Jogo de exemplo: Corrida de Chat](#jogo-de-exemplo-corrida-de-chat)
-5. [Exemplo completo: jogo tipo Worms](#exemplo-completo-jogo-tipo-worms)
-6. [Backend alternativo: pytchat](#backend-alternativo-pytchat-sem-cota-sem-api-key)
-7. [Instalar o pytchat](#instalar-o-pytchat) — Linux e Windows
+4. [Referência da API](#referência-da-api)
+5. [Jogo de exemplo: Corrida de Chat](#jogo-de-exemplo-corrida-de-chat)
+6. [Exemplo completo: jogo tipo Worms](#exemplo-completo-jogo-tipo-worms)
+7. [Backend alternativo: API oficial](#backend-alternativo-api-oficial-com-cota) — precisa de key
 8. [Roteiro de teste](#roteiro-de-teste)
 9. [Pegadinhas](#pegadinhas)
 10. [Estado do código](#estado-do-código)
@@ -52,7 +52,7 @@ jogo real.
    Caminho final obrigatório: `res://addons/stream_chat`.
 2. `Projeto → Configurações do Projeto → Plugins` → **Enable**.
 
-Requer **Godot 4.3+** se for usar o backend pytchat (`OS.execute_with_pipe`).
+Requer **Godot 4.3+** se for usar o backend pytchat (padrão).
 O backend oficial funciona em 4.x.
 
 Para a parte da Twitch você também precisa do
@@ -63,9 +63,12 @@ só usa YouTube, pode apagar a pasta `twitch/` — o `core/` não depende dela.
 
 ## Credenciais
 
-Só o backend `OFFICIAL_API` precisa de chave. Pegue em
-`console.cloud.google.com` → novo projeto → ative **YouTube Data API v3** →
-Credenciais → Chave de API. Para *ler* chat de live pública não precisa OAuth.
+**O padrão (pytchat) não precisa de chave.** Se você não mexeu no `backend`,
+pular direto para [Apontar para a sua live](#apontar-para-a-sua-live).
+
+A API oficial precisa de chave. Pegue em `console.cloud.google.com` → novo
+projeto → ative **YouTube Data API v3** → Credenciais → Chave de API. Para *ler*
+chat de live pública não precisa OAuth.
 
 **Nunca ponha a chave no inspector** — ela iria parar dentro do `.tscn` e daí
 pro Git. Escolha uma:
@@ -199,8 +202,8 @@ evita você manter um dicionário paralelo.
 ```gdscript
 enum Backend { OFFICIAL_API, PYTCHAT_SIDECAR }
 
-@export var backend: Backend = Backend.OFFICIAL_API
-@export var api_key: String = ""      # deixe vazio; usa StreamChatCredentials
+@export var backend: Backend = Backend.PYTCHAT_SIDECAR
+@export var api_key: String = ""      # só OFFICIAL_API; pytchat ignora
 @export var channel_id: String = ""   # resolve a live ativa sozinho
 @export var video_id: String = ""     # alternativa: ID direto (ganha do channel_id)
 @export var min_poll_interval: float = 5.0
@@ -502,16 +505,16 @@ para ~870 chamadas. No backend pytchat vira no-op (não há cota).
 
 ---
 
-## Backend alternativo: pytchat (sem cota, sem API key)
+## Backend alternativo: API oficial (com cota)
 
-| | `OFFICIAL_API` (padrão) | `PYTCHAT_SIDECAR` |
+| | `PYTCHAT_SIDECAR` (padrão) | `OFFICIAL_API` |
 |---|---|---|
-| API key | precisa | não |
-| Cota | ~2 lives/dia | nenhuma |
-| Latência | ~5s | ~1,5s |
-| Estabilidade | contrato documentado | quebra sem aviso |
-| Manutenção da dep. | Google | upstream parado |
-| Termos de uso | limpo | zona cinza |
+| API key | não | precisa |
+| Cota | nenhuma | ~2 lives/dia |
+| Latência | ~1,5s | ~5s |
+| Estabilidade | quebra sem aviso | contrato documentado |
+| Manutenção da dep. | upstream parado | Google |
+| Termos de uso | zona cinza | limpo |
 
 Roda `pytchat_bridge.py` como processo filho e lê o stdout em NDJSON. Usa o
 `CompatibleProcessor` do pytchat, que devolve o **mesmo formato** da API
@@ -521,8 +524,8 @@ oficial — o `youtube_chat_message.gd` funciona sem alteração.
 [Instalar o pytchat](#instalar-o-pytchat), que tem armadilha de sistema
 operacional nos dois lados.
 
-**Ativar:** no inspector do `YouTubeChatProvider`, mude `backend` para
-`PYTCHAT_SIDECAR` e ajuste `python_executable`.
+**Ativar o oficial:** no inspector do `YouTubeChatProvider`, mude `backend` para
+`OFFICIAL_API`, preencha `api_key` e ajuste `python_executable` se necessário.
 
 **Testar sozinho, antes de culpar o Godot:**
 
@@ -550,7 +553,8 @@ roda na **sua** máquina.
 
 ## Instalar o pytchat
 
-Só para o backend `PYTCHAT_SIDECAR`. Quem usa `OFFICIAL_API` pode pular.
+**O pytchat é o backend padrão.** Se você quer usar o addon assim que instalar,
+faça isto primeiro. Quer usar só a API oficial? Pode pular esta seção.
 
 O que o addon faz é rodar `<python_executable> pytchat_bridge.py <alvo>`. Então
 a única coisa que importa é: **o Python que você apontar precisa conseguir
@@ -694,9 +698,10 @@ Se `CONECTADO` não aparecer, o erro estará no console via `push_warning` com o
 
 ### 4. Consumo de cota
 
-Depois de uma live de teste, veja
+Se você estiver usando o backend oficial, depois de uma live de teste veja
 `console.cloud.google.com/iam-admin/quotas`. Esse número decide se você fica no
-backend oficial ou migra pro pytchat.
+backend oficial ou migra pro pytchat. Com pytchat (padrão), não há cota — pule
+esta seção.
 
 ### 5. Twitch
 
@@ -736,8 +741,8 @@ precisa atualizar o `video_id` a cada transmissão. Ver
 **Chat lento ou só-membros** faz comandos chegarem picotados. Confira antes de
 streamar.
 
-**Latência de ~5s** no backend oficial. Irrelevante em jogo por turnos,
-inviável em jogo de reflexo.
+**Latência de ~5s no backend oficial.** Irrelevante em jogo por turnos,
+inviável em jogo de reflexo. O pytchat padrão tem ~1,5s.
 
 ---
 

@@ -3,27 +3,35 @@ extends ChatProvider
 
 ## Adapta o chat do YouTube para a interface ChatProvider.
 ##
-## Uso mínimo:
+## Uso mínimo (pytchat, padrão — sem key):
 ##     var yt := YouTubeChatProvider.new()
-##     yt.api_key = "AIza..."
 ##     yt.channel_id = "UCxxxxxxxxxxxxxxxxxxxxxx"   # ou setar video_id direto
 ##     add_child(yt)
 ##     yt.user_joined.connect(_spawn_player)
 ##     yt.user_command.connect(_handle_command)
+##     yt.connect_chat()
+##
+## Uso com API oficial (precisa de key):
+##     var yt := YouTubeChatProvider.new()
+##     yt.backend = YouTubeChatProvider.Backend.OFFICIAL_API
+##     yt.api_key = "AIza..."
+##     yt.channel_id = "UCxxxxxxxxxxxxxxxxxxxxxx"
+##     add_child(yt)
 ##     yt.connect_chat()
 
 ## Deixe VAZIO em produção. Vazio = o addon busca na variável de ambiente
 ## YOUTUBE_API_KEY ou em user://youtube_api_key.txt, mantendo a chave fora do
 ## .tscn e do Git. Preencher aqui só para teste rápido descartável.
 ## Qual backend usar.
+##   PYTCHAT_SIDECAR — processo Python com pytchat. Sem key, sem cota,
+##                    mais rápido (~1-2s de latência). Padrão.
 ##   OFFICIAL_API   — YouTube Data API v3. Precisa de key, consome cota,
-##                    contrato documentado e estável.
-##   PYTCHAT_SIDECAR — processo Python com pytchat. Sem key, sem cota, mas
-##                    depende da InnerTube (não documentada) e de uma lib
-##                    cuja manutenção upstream está parada.
+##                    mais lento (~5s mínimo entre polls). Use se pytchat
+##                    não estiver disponível ou se precisar de contrato
+##                    documentado e estável.
 enum Backend { OFFICIAL_API, PYTCHAT_SIDECAR }
 
-@export var backend: Backend = Backend.OFFICIAL_API
+@export var backend: Backend = Backend.PYTCHAT_SIDECAR
 
 @export var api_key: String = ""
 
